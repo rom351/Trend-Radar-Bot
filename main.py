@@ -12,23 +12,48 @@ GOOGLE_SHEETS_WEBHOOK_URL = os.environ["GOOGLE_SHEETS_WEBHOOK_URL"]
 
 
 PROMPT = """
+Ты Trend Radar Bot — русскоязычный аналитик трендов товаров, брендов, e-commerce и потребительского спроса.
+
 Сделай утренний тренд-дайджест на русском языке.
 
-Тема:
+Цель:
+Найти не абстрактные новости, а конкретные коммерчески интересные сигналы:
 - трендовые товары
-- бренды
-- e-commerce
-- маркетплейсы
-- TikTok / соцсети
+- товарные категории
+- реальные бренды
+- маркетплейс-сигналы
+- TikTok / Instagram / YouTube / соцсети
 - Google Trends / поисковый спрос
-- идеи для малого бизнеса, рекламы, контента или перепродажи
+- идеи для малого бизнеса, рекламы, контента, теста спроса или перепродажи
 
-Важно:
-- пиши только на русском языке
-- выбери 8 пунктов
-- не выдумывай точные продажи
-- если нет точных продаж, пиши: сигнал спроса, поисковый интерес, упоминания или обсуждения
-- не используй переносы строк внутри значений JSON
+Строгие правила:
+- Пиши только на русском языке.
+- Дай ровно 8 пунктов.
+- Каждый пункт должен быть конкретным и понятным.
+- Не выдумывай бренды. Если не уверен, пиши категорию товара, а не название бренда.
+- Не используй абстрактные названия вроде ShopLocal, EcoWear, LocalMarket, если это не реальный известный бренд.
+- Не пиши общие пункты вроде "переезд в город", "локальные товары", "здоровый образ жизни" без конкретного товара или ниши.
+- Не выдумывай точные продажи, выручку или проценты.
+- Если нет точных продаж, используй формулировки: "сигнал спроса", "поисковый интерес", "упоминания", "обсуждения", "рост внимания".
+- Для каждого пункта обязательно дай 2-4 примера брендов, товаров, площадок или похожих продуктов. Если точных брендов нет, дай примеры форматов товара.
+- Идея действия должна быть практической: что можно проверить, купить, протестировать, снять в контент, добавить в ассортимент или сравнить.
+- Добавь поле "check": что проверить перед тем, как тратить деньги.
+- Не используй переносы строк внутри значений JSON.
+
+Хорошие примеры конкретики:
+- "AI glasses / умные очки", примеры: Ray-Ban Meta, Brilliant Labs Frame, Solos
+- "корейские солнцезащитные стики SPF", примеры: Beauty of Joseon, Round Lab, Tocobo
+- "умные кольца", примеры: Oura Ring, Samsung Galaxy Ring, Ultrahuman Ring
+- "портативные блендеры", примеры: BlendJet, Ninja Blast, аналоги на Amazon
+- "товары для организации дома", примеры: clear storage bins, drawer organizers, vacuum bags
+
+Плохие примеры, которые нельзя давать:
+- "ShopLocal"
+- "EcoWear"
+- "переезд в город"
+- "локальные товары"
+- "соцсети растут"
+- "маркетплейсы развиваются"
 
 Верни строго JSON object такого вида:
 
@@ -36,11 +61,13 @@ PROMPT = """
   "trends": [
     {
       "category": "категория",
-      "item": "товар или бренд",
+      "item": "конкретный товар, бренд или ниша",
+      "examples": "2-4 конкретных примера",
       "reason": "почему растёт",
-      "source": "источник сигнала",
+      "source": "где виден сигнал",
       "strength": "низкая / средняя / высокая",
-      "action": "идея действия",
+      "action": "практическая идея действия",
+      "check": "что проверить перед вложениями",
       "link": "ссылка или пустая строка"
     }
   ]
@@ -67,8 +94,8 @@ def ask_groq():
                     "content": PROMPT,
                 },
             ],
-            "temperature": 0.2,
-            "max_tokens": 2500,
+            "temperature": 0.25,
+            "max_tokens": 3500,
             "response_format": {"type": "json_object"},
         },
         timeout=60,
@@ -126,18 +153,36 @@ def main():
     for index, trend in enumerate(trends, start=1):
         category = trend.get("category", "")
         item = trend.get("item", "")
+        examples = trend.get("examples", "")
         reason = trend.get("reason", "")
         source = trend.get("source", "")
         strength = trend.get("strength", "")
         action = trend.get("action", "")
+        check = trend.get("check", "")
         link = trend.get("link", "")
 
         message_parts.append(f"{index}. {item}")
-        message_parts.append(f"Категория: {category}")
-        message_parts.append(f"Почему растёт: {reason}")
-        message_parts.append(f"Сигнал: {source}")
-        message_parts.append(f"Сила: {strength}")
-        message_parts.append(f"Идея: {action}")
+
+        if category:
+            message_parts.append(f"Категория: {category}")
+
+        if examples:
+            message_parts.append(f"Примеры: {examples}")
+
+        if reason:
+            message_parts.append(f"Почему растёт: {reason}")
+
+        if source:
+            message_parts.append(f"Сигнал: {source}")
+
+        if strength:
+            message_parts.append(f"Сила: {strength}")
+
+        if action:
+            message_parts.append(f"Идея: {action}")
+
+        if check:
+            message_parts.append(f"Проверить: {check}")
 
         if link:
             message_parts.append(link)
@@ -149,7 +194,7 @@ def main():
                 "date": today,
                 "category": category,
                 "item": item,
-                "reason": reason,
+                "reason": f"Примеры: {examples}. {reason}. Проверить: {check}",
                 "source": source,
                 "strength": strength,
                 "action": action,
