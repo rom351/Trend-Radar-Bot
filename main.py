@@ -11,15 +11,10 @@ TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 GOOGLE_SHEETS_WEBHOOK_URL = os.environ["GOOGLE_SHEETS_WEBHOOK_URL"]
 
 
-PROMPT = """
+BASE_RULES = """
 Ты Trend Radar Bot — русскоязычный аналитик трендов товаров, брендов, e-commerce и потребительского спроса.
 
-Сделай утренний тренд-дайджест на русском языке.
-
-Цель:
-Найти конкретные коммерчески интересные сигналы, которые можно проверить в e-commerce, контенте, рекламе, перепродаже или ассортименте.
-
-Ищи:
+Дай конкретные коммерчески интересные сигналы:
 - трендовые товары
 - товарные категории
 - реальные бренды
@@ -30,42 +25,21 @@ PROMPT = """
 
 Строгие правила:
 - Пиши только на русском языке.
-- Дай ровно 8 пунктов.
 - Каждый пункт должен быть конкретным товаром, нишей или реальным брендом.
 - Не выдумывай бренды.
-- Если не уверен в бренде, пиши категорию товара.
-- Не пиши абстрактные названия вроде ShopLocal, EcoWear, LocalMarket, если это не реальный известный бренд.
+- Не пиши абстрактные названия вроде ShopLocal, EcoWear, LocalMarket.
 - Не пиши общие пункты вроде "локальные товары", "здоровый образ жизни", "переезд", "маркетплейсы", "соцсети".
 - Не выдумывай точные продажи, выручку, проценты и рейтинги.
-- Если нет точных продаж, используй формулировки: "сигнал спроса", "поисковый интерес", "упоминания", "обсуждения", "рост внимания".
-- Не повторяй одну и ту же причину во всех пунктах. Избегай шаблонов.
-- Не пиши везде "проверить сертификаты". Сертификаты упоминай только там, где это реально важно: косметика, еда, электроника, детские товары.
+- Если нет точных продаж, используй: "сигнал спроса", "поисковый интерес", "упоминания", "обсуждения", "рост внимания".
+- Не повторяй одну и ту же причину во всех пунктах.
+- Сертификаты упоминай только там, где это важно: косметика, еда, электроника, детские товары.
 - Для каждого пункта дай 2-4 конкретных примера брендов, товаров, площадок или похожих продуктов.
-- Добавь конкретные поисковые запросы, которые можно вручную проверить в Google, Amazon, TikTok, YouTube или маркетплейсах.
+- Добавь конкретные поисковые запросы для Google, Amazon, TikTok, YouTube или маркетплейсов.
 - Добавь первый простой тест на 10-20 минут.
 - Оцени коммерческий потенциал: низкий / средний / высокий.
 - Оцени сложность входа: низкая / средняя / высокая.
 - Добавь, что проверить перед вложениями.
 - Не используй переносы строк внутри значений JSON.
-
-Хорошие примеры:
-- "AI glasses / умные очки", примеры: Ray-Ban Meta, Brilliant Labs Frame, Solos
-- "корейские SPF-стики", примеры: Beauty of Joseon, Round Lab, Tocobo
-- "умные кольца", примеры: Oura Ring, Samsung Galaxy Ring, Ultrahuman Ring
-- "портативные блендеры", примеры: BlendJet, Ninja Blast, аналоги на Amazon
-- "органайзеры для дома", примеры: clear storage bins, drawer organizers, vacuum bags
-- "мини-принтеры для наклеек", примеры: Phomemo, Nelko, JADENS
-- "pet camera / камеры для питомцев", примеры: Furbo, Eufy Pet Camera, Petcube
-- "travel compression bags", примеры: vacuum travel bags, packing cubes, compression organizers
-
-Плохие примеры:
-- "ShopLocal"
-- "EcoWear"
-- "переезд в город"
-- "локальные товары"
-- "соцсети растут"
-- "маркетплейсы развиваются"
-- "здоровый образ жизни"
 
 Верни строго JSON object такого вида:
 
@@ -91,7 +65,34 @@ PROMPT = """
 """
 
 
-def ask_groq():
+def build_prompt(count, exclude_items=None):
+    exclude_text = ""
+    if exclude_items:
+        exclude_text = "Не повторяй эти пункты: " + ", ".join(exclude_items) + "."
+
+    return f"""
+Сделай утренний тренд-дайджест на русском языке.
+
+Нужно дать ровно {count} разных трендов.
+{exclude_text}
+
+Хорошие направления:
+- AI-гаджеты и носимые устройства
+- beauty / skincare / SPF
+- товары для дома и организации пространства
+- fitness / wellness / sleep tech
+- pet tech / товары для животных
+- travel accessories
+- kitchen gadgets
+- creator economy tools
+- детские товары, если есть понятный тренд
+- недорогие товары для маркетплейсов
+
+{BASE_RULES}
+"""
+
+
+def ask_groq(prompt):
     response = requests.post(
         "https://api.groq.com/openai/v1/chat/completions",
         headers={
@@ -107,14 +108,14 @@ def ask_groq():
                 },
                 {
                     "role": "user",
-                    "content": PROMPT,
+                    "content": prompt,
                 },
             ],
-            "temperature": 0.25,
-            "max_tokens": 4000,
+            "temperature": 0.35,
+            "max_tokens": 8000,
             "response_format": {"type": "json_object"},
         },
-        timeout=60,
+        timeout=90,
     )
     response.raise_for_status()
     data = response.json()
@@ -129,17 +130,44 @@ def parse_trends(text):
     return trends
 
 
+def get_trends():
+    trends = parse_trends(ask_groq(build_prompt(10)))
+
+    if len(trends) < 8:
+        existing_items = [trend.get("item", "") for trend in trends if trend.get("item")]
+        missing_count = 10 - len(trends)
+        more_trends = parse_trends(ask_groq(build_prompt(missing_count, existing_items)))
+        trends.extend(more_trends)
+
+    return trends[:10]
+
+
 def send_telegram(text):
-    response = requests.post(
-        f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-        data={
-            "chat_id": TELEGRAM_CHAT_ID,
-            "text": text[:4000],
-            "disable_web_page_preview": True,
-        },
-        timeout=30,
-    )
-    response.raise_for_status()
+    chunks = []
+    current = ""
+
+    for block in text.split("\n\n"):
+        part = block + "\n\n"
+        if len(current) + len(part) > 3800:
+            chunks.append(current.strip())
+            current = part
+        else:
+            current += part
+
+    if current.strip():
+        chunks.append(current.strip())
+
+    for chunk in chunks:
+        response = requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+            data={
+                "chat_id": TELEGRAM_CHAT_ID,
+                "text": chunk,
+                "disable_web_page_preview": True,
+            },
+            timeout=30,
+        )
+        response.raise_for_status()
 
 
 def send_sheet_row(row):
@@ -154,9 +182,7 @@ def send_sheet_row(row):
 
 def main():
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-
-    groq_text = ask_groq()
-    trends = parse_trends(groq_text)
+    trends = get_trends()
 
     message_parts = [
         "Trend Radar Bot",
@@ -182,39 +208,17 @@ def main():
         link = trend.get("link", "")
 
         message_parts.append(f"{index}. {item}")
-
-        if category:
-            message_parts.append(f"Категория: {category}")
-
-        if examples:
-            message_parts.append(f"Примеры: {examples}")
-
-        if reason:
-            message_parts.append(f"Почему растёт: {reason}")
-
-        if source:
-            message_parts.append(f"Сигнал: {source}")
-
-        if search_queries:
-            message_parts.append(f"Что искать: {search_queries}")
-
-        if first_test:
-            message_parts.append(f"Первый тест: {first_test}")
-
-        if commercial_potential:
-            message_parts.append(f"Потенциал: {commercial_potential}")
-
-        if entry_difficulty:
-            message_parts.append(f"Сложность входа: {entry_difficulty}")
-
-        if strength:
-            message_parts.append(f"Сила сигнала: {strength}")
-
-        if action:
-            message_parts.append(f"Идея: {action}")
-
-        if check:
-            message_parts.append(f"Проверить: {check}")
+        message_parts.append(f"Категория: {category}")
+        message_parts.append(f"Примеры: {examples}")
+        message_parts.append(f"Почему растёт: {reason}")
+        message_parts.append(f"Сигнал: {source}")
+        message_parts.append(f"Что искать: {search_queries}")
+        message_parts.append(f"Первый тест: {first_test}")
+        message_parts.append(f"Потенциал: {commercial_potential}")
+        message_parts.append(f"Сложность входа: {entry_difficulty}")
+        message_parts.append(f"Сила сигнала: {strength}")
+        message_parts.append(f"Идея: {action}")
+        message_parts.append(f"Проверить: {check}")
 
         if link:
             message_parts.append(link)
@@ -246,7 +250,6 @@ def main():
         saved_rows += 1
 
     message_parts.append(f"Сохранено в Google Sheets: {saved_rows} строк")
-
     send_telegram("\n".join(message_parts))
 
 
