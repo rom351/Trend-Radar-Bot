@@ -63,7 +63,7 @@ def ask_groq():
             "Content-Type": "application/json",
         },
         json={
-            "model": "llama-3.3-70b-versatile",
+            "model": "openai/gpt-oss-20b",
             "messages": [
                 {
                     "role": "system",
@@ -149,18 +149,25 @@ def main():
         link = trend.get("link", "")
 
         message_parts.append(f"{index}. {item}")
+
         if category:
             message_parts.append(f"Категория: {category}")
+
         if reason:
             message_parts.append(f"Почему растёт: {reason}")
+
         if source:
             message_parts.append(f"Сигнал: {source}")
+
         if strength:
             message_parts.append(f"Сила: {strength}")
+
         if action:
             message_parts.append(f"Идея: {action}")
+
         if link:
             message_parts.append(link)
+
         message_parts.append("")
 
         send_sheet_row(
@@ -176,6 +183,7 @@ def main():
                 "status": "новое",
             }
         )
+
         saved_rows += 1
 
     message_parts.append(f"Сохранено в Google Sheets: {saved_rows} строк")
