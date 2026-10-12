@@ -12,8 +12,6 @@ GOOGLE_SHEETS_WEBHOOK_URL = os.environ["GOOGLE_SHEETS_WEBHOOK_URL"]
 
 
 PROMPT = """
-Ты Trend Radar Bot.
-
 Сделай утренний тренд-дайджест на русском языке.
 
 Тема:
@@ -27,30 +25,25 @@ PROMPT = """
 
 Важно:
 - пиши только на русском языке
-- выбери 8-12 пунктов
+- выбери 8 пунктов
 - не выдумывай точные продажи
-- если нет точных продаж, пиши "сигнал спроса", "поисковый интерес", "упоминания", "обсуждения"
-- формат должен быть коротким и удобным для Telegram
+- если нет точных продаж, пиши: сигнал спроса, поисковый интерес, упоминания или обсуждения
+- не используй переносы строк внутри значений JSON
 
-Для каждого пункта дай:
-1. Категория
-2. Товар или бренд
-3. Почему растёт
-4. Источник сигнала
-5. Сила тренда: низкая / средняя / высокая
-6. Идея действия
-7. Ссылка, если можешь дать
+Верни строго JSON object такого вида:
 
-Верни результат строго в JSON-массиве.
-Каждый элемент:
 {
-  "category": "...",
-  "item": "...",
-  "reason": "...",
-  "source": "...",
-  "strength": "...",
-  "action": "...",
-  "link": "..."
+  "trends": [
+    {
+      "category": "категория",
+      "item": "товар или бренд",
+      "reason": "почему растёт",
+      "source": "источник сигнала",
+      "strength": "низкая / средняя / высокая",
+      "action": "идея действия",
+      "link": "ссылка или пустая строка"
+    }
+  ]
 }
 """
 
@@ -67,15 +60,16 @@ def ask_groq():
             "messages": [
                 {
                     "role": "system",
-                    "content": "Ты русскоязычный аналитик трендов товаров, брендов и e-commerce.",
+                    "content": "Ты русскоязычный аналитик трендов товаров, брендов и e-commerce. Отвечай только валидным JSON.",
                 },
                 {
                     "role": "user",
                     "content": PROMPT,
                 },
             ],
-            "temperature": 0.4,
+            "temperature": 0.2,
             "max_tokens": 2500,
+            "response_format": {"type": "json_object"},
         },
         timeout=60,
     )
@@ -84,22 +78,12 @@ def ask_groq():
     return data["choices"][0]["message"]["content"]
 
 
-def parse_json(text):
-    text = text.strip()
-
-    if text.startswith("```"):
-        text = text.split("```", 2)[1]
-        if text.startswith("json"):
-            text = text[4:]
-        text = text.strip()
-
-    start = text.find("[")
-    end = text.rfind("]")
-
-    if start != -1 and end != -1:
-        text = text[start : end + 1]
-
-    return json.loads(text)
+def parse_trends(text):
+    data = json.loads(text)
+    trends = data.get("trends", [])
+    if not isinstance(trends, list):
+        return []
+    return trends
 
 
 def send_telegram(text):
@@ -129,7 +113,7 @@ def main():
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
     groq_text = ask_groq()
-    trends = parse_json(groq_text)
+    trends = parse_trends(groq_text)
 
     message_parts = [
         "Trend Radar Bot",
@@ -149,21 +133,11 @@ def main():
         link = trend.get("link", "")
 
         message_parts.append(f"{index}. {item}")
-
-        if category:
-            message_parts.append(f"Категория: {category}")
-
-        if reason:
-            message_parts.append(f"Почему растёт: {reason}")
-
-        if source:
-            message_parts.append(f"Сигнал: {source}")
-
-        if strength:
-            message_parts.append(f"Сила: {strength}")
-
-        if action:
-            message_parts.append(f"Идея: {action}")
+        message_parts.append(f"Категория: {category}")
+        message_parts.append(f"Почему растёт: {reason}")
+        message_parts.append(f"Сигнал: {source}")
+        message_parts.append(f"Сила: {strength}")
+        message_parts.append(f"Идея: {action}")
 
         if link:
             message_parts.append(link)
