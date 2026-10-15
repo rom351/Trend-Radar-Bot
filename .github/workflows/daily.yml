@@ -2,7 +2,8 @@ name: Daily Trend Radar
 
 on:
   schedule:
-    - cron: '0 5 * * *'
+    - cron: '45 5 * * *'
+      timezone: "Europe/Kyiv"
   workflow_dispatch:
 
 jobs:
