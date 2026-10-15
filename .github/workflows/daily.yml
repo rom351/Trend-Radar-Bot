@@ -1,5 +1,12 @@
 name: Daily Trend Radar
 
+permissions:
+  contents: write
+
+concurrency:
+  group: daily-trend-radar
+  cancel-in-progress: false
+
 on:
   schedule:
     - cron: '45 5 * * *'
@@ -21,6 +28,9 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: Run checks
+        run: python -m unittest discover -s tests -v
+
       - name: Run Trend Radar
         env:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
@@ -28,3 +38,14 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           GOOGLE_SHEETS_WEBHOOK_URL: ${{ secrets.GOOGLE_SHEETS_WEBHOOK_URL }}
         run: python main.py
+
+      - name: Save trend history
+        run: |
+          if git diff --quiet -- data/trend_history.json; then
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/trend_history.json
+          git commit -m "Update trend history"
+          git push
