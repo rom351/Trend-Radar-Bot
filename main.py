@@ -13,6 +13,7 @@ import requests
 
 KYIV = ZoneInfo("Europe/Kyiv")
 DAILY_COUNT = 8
+RATING_COUNT = 10
 HISTORY_DAYS = 60
 DEDUP_DAYS = 30
 WEEKLY_DAYS = 7
@@ -257,13 +258,13 @@ def clean_trend(raw):
     return trend
 
 
-def get_trends(recent_items, live_signals):
+def get_trends(recent_items, live_signals, target_count=RATING_COUNT):
     collected = []
     excluded = list(recent_items)
     allowed_links = {signal["link"] for signal in live_signals if signal.get("link")}
 
     for attempt in range(4):
-        missing = DAILY_COUNT - len(collected)
+        missing = target_count - len(collected)
         if missing <= 0:
             break
         requested = min(12, missing + 4)
@@ -286,27 +287,35 @@ def get_trends(recent_items, live_signals):
             collected.append(trend)
             excluded.append(trend["item"])
             added += 1
-            if len(collected) == DAILY_COUNT:
+            if len(collected) == target_count:
                 break
         if added == 0 and attempt < 3:
             time.sleep(2)
 
-    if len(collected) != DAILY_COUNT:
+    if len(collected) != target_count:
         raise RuntimeError(
-            f"Не удалось собрать {DAILY_COUNT} качественных новых трендов: "
+            f"Не удалось собрать {target_count} качественных новых трендов: "
             f"получено {len(collected)}"
         )
     return collected
 
 
-def load_history(path=HISTORY_PATH):
+def load_state(path=HISTORY_PATH):
+    empty = {"entries": [], "pinned_rating_message_id": None}
     if not path.exists():
-        return []
+        return empty
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return []
-    return data if isinstance(data, list) else []
+        return empty
+    if isinstance(data, list):
+        return {"entries": data, "pinned_rating_message_id": None}
+    if not isinstance(data, dict) or not isinstance(data.get("entries"), list):
+        return empty
+    return {
+        "entries": data["entries"],
+        "pinned_rating_message_id": data.get("pinned_rating_message_id"),
+    }
 
 
 def parse_date(value):
@@ -326,10 +335,10 @@ def recent_history(history, today, days):
     ]
 
 
-def save_history(history, path=HISTORY_PATH):
+def save_state(state, path=HISTORY_PATH):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
-        json.dumps(history, ensure_ascii=False, indent=2) + "\n",
+        json.dumps(state, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
 
@@ -352,8 +361,10 @@ def trend_score(trend):
     return round(raw / 21 * 10, 1)
 
 
-def weekly_top(history, today, count=5):
-    candidates = recent_history(history, today, WEEKLY_DAYS)
+def ranked_top(history, today, days, count, published_only=False):
+    candidates = recent_history(history, today, days)
+    if published_only:
+        candidates = [entry for entry in candidates if entry.get("published", True)]
     unique = []
     seen = []
     for entry in sorted(
@@ -371,6 +382,27 @@ def weekly_top(history, today, count=5):
     return unique
 
 
+def weekly_top(history, today, count=5):
+    return ranked_top(history, today, WEEKLY_DAYS, count, published_only=True)
+
+
+def rating_top(history, today, count=RATING_COUNT):
+    return ranked_top(history, today, DEDUP_DAYS, count)
+
+
+def telegram_call(method, data):
+    response = requests.post(
+        f"https://api.telegram.org/bot{env('TELEGRAM_BOT_TOKEN')}/{method}",
+        data=data,
+        timeout=30,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    if not payload.get("ok"):
+        raise RuntimeError(payload.get("description", f"Ошибка Telegram API: {method}"))
+    return payload.get("result")
+
+
 def send_telegram(text):
     chunks = []
     current = ""
@@ -384,17 +416,49 @@ def send_telegram(text):
     if current.strip():
         chunks.append(current.strip())
 
+    message_ids = []
     for chunk in chunks:
-        response = requests.post(
-            f"https://api.telegram.org/bot{env('TELEGRAM_BOT_TOKEN')}/sendMessage",
-            data={
+        result = telegram_call(
+            "sendMessage",
+            {
                 "chat_id": env("TELEGRAM_CHAT_ID"),
                 "text": chunk,
                 "disable_web_page_preview": True,
             },
-            timeout=30,
         )
-        response.raise_for_status()
+        message_ids.append(result["message_id"])
+    return message_ids
+
+
+def update_pinned_rating(text, message_id=None):
+    if message_id:
+        try:
+            telegram_call(
+                "editMessageText",
+                {
+                    "chat_id": env("TELEGRAM_CHAT_ID"),
+                    "message_id": message_id,
+                    "text": text,
+                    "disable_web_page_preview": True,
+                },
+            )
+        except requests.HTTPError as error:
+            response_text = error.response.text if error.response is not None else ""
+            if "message is not modified" not in response_text:
+                message_id = None
+
+    if not message_id:
+        message_id = send_telegram(text)[0]
+
+    telegram_call(
+        "pinChatMessage",
+        {
+            "chat_id": env("TELEGRAM_CHAT_ID"),
+            "message_id": message_id,
+            "disable_notification": True,
+        },
+    )
+    return message_id
 
 
 def send_sheet_row(row):
@@ -476,14 +540,40 @@ def build_weekly_digest(history, today):
     return "\n\n".join(blocks)
 
 
+def build_rating(history, today, now):
+    top = rating_top(history, today)
+    lines = [
+        "ЗАКРЕПЛЁННЫЙ РЕЙТИНГ — ТОП-10 ТОВАРОВ",
+        f"Обновлено: {now.strftime('%d.%m.%Y %H:%M')} по Киеву",
+        "Оценка учитывает потенциал, силу сигнала, маржу, конкуренцию и сложность входа.",
+        "",
+    ]
+    for index, entry in enumerate(top, start=1):
+        trend = entry["trend"]
+        lines.extend(
+            [
+                f"{index}. {trend['item']} — {trend_score(trend)}/10",
+                (
+                    f"Потенциал: {trend['commercial_potential']} · "
+                    f"Маржа: {trend['margin_potential']} · "
+                    f"Конкуренция: {trend['competition']}"
+                ),
+                "",
+            ]
+        )
+    return "\n".join(lines).strip()
+
+
 def main():
     now = datetime.now(KYIV)
     today = now.date()
-    history = load_history()
+    state = load_state()
+    history = state["entries"]
     recent = recent_history(history, today, DEDUP_DAYS)
     recent_items = [entry.get("trend", {}).get("item", "") for entry in recent]
     live_signals = fetch_live_signals()
-    trends = get_trends(recent_items, live_signals)
+    candidates = get_trends(recent_items, live_signals)
+    trends = candidates[:DAILY_COUNT]
 
     daily_blocks = [f"Trend Radar — {today.strftime('%d.%m.%Y')}", "8 товарных трендов на сегодня"]
     for index, trend in enumerate(trends, start=1):
@@ -492,18 +582,33 @@ def main():
     daily_blocks.append("Сохранено в Google Sheets: 8 строк")
     send_telegram("\n\n".join(daily_blocks))
 
-    history.extend({"date": today.isoformat(), "trend": trend} for trend in trends)
+    history.extend(
+        {
+            "date": today.isoformat(),
+            "trend": trend,
+            "published": index < DAILY_COUNT,
+        }
+        for index, trend in enumerate(candidates)
+    )
     history = recent_history(history, today, HISTORY_DAYS)
+    state["entries"] = history
+    save_state(state)
 
     if now.weekday() == 5:
         send_telegram(build_weekly_digest(history, today))
 
-    save_history(history)
+    state["pinned_rating_message_id"] = update_pinned_rating(
+        build_rating(history, today, now),
+        state.get("pinned_rating_message_id"),
+    )
+    save_state(state)
     print(
         json.dumps(
             {
                 "date": today.isoformat(),
                 "daily_trends": len(trends),
+                "rating_candidates": len(candidates),
+                "rating_size": len(rating_top(history, today)),
                 "weekly_digest": now.weekday() == 5,
                 "history_entries": len(history),
                 "live_signals": len(live_signals),

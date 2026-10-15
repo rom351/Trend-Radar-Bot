@@ -40,6 +40,7 @@ jobs:
         run: python main.py
 
       - name: Save trend history
+        if: always()
         run: |
           if git diff --quiet -- data/trend_history.json; then
             exit 0

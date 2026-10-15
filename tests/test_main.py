@@ -49,6 +49,11 @@ class TrendRadarTests(unittest.TestCase):
             {"date": today.isoformat(), "trend": trend("Умные кормушки")},
             {
                 "date": today.isoformat(),
+                "published": False,
+                "trend": trend("Резервный товар"),
+            },
+            {
+                "date": today.isoformat(),
                 "trend": trend(
                     "Органайзер",
                     potential="средний",
@@ -61,13 +66,27 @@ class TrendRadarTests(unittest.TestCase):
             [entry["trend"]["item"] for entry in result],
             ["Умная кормушка", "Органайзер"],
         )
+        rating = main.rating_top(history, today)
+        self.assertIn("Резервный товар", [entry["trend"]["item"] for entry in rating])
 
-    def test_history_round_trip(self):
+    def test_state_round_trip(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "history.json"
-            expected = [{"date": "2026-10-15", "trend": trend("Товар")}]
-            main.save_history(expected, path)
-            self.assertEqual(main.load_history(path), expected)
+            expected = {
+                "entries": [{"date": "2026-10-15", "trend": trend("Товар")}],
+                "pinned_rating_message_id": 123,
+            }
+            main.save_state(expected, path)
+            self.assertEqual(main.load_state(path), expected)
+
+    def test_legacy_history_is_migrated(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "history.json"
+            path.write_text('[]', encoding="utf-8")
+            self.assertEqual(
+                main.load_state(path),
+                {"entries": [], "pinned_rating_message_id": None},
+            )
 
 
 if __name__ == "__main__":
