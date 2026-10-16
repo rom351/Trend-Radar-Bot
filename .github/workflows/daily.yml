@@ -8,6 +8,11 @@ concurrency:
   cancel-in-progress: false
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/test-trigger
   schedule:
     - cron: '45 5 * * *'
       timezone: "Europe/Kyiv"
