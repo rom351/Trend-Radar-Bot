@@ -19,6 +19,40 @@ DEDUP_DAYS = 30
 WEEKLY_DAYS = 7
 HISTORY_PATH = Path(__file__).resolve().parent / "data" / "trend_history.json"
 GOOGLE_TRENDS_GEOS = ("UA", "PL", "DE", "US")
+PRODUCT_SIGNAL_WORDS = (
+    "iphone",
+    "samsung",
+    "pixel",
+    "dyson",
+    "lego",
+    "air fryer",
+    "skincare",
+    "sunscreen",
+    "serum",
+    "shampoo",
+    "perfume",
+    "gadget",
+    "headphone",
+    "camera",
+    "keyboard",
+    "toy",
+    "pet ",
+    "dog ",
+    "cat ",
+    "coffee",
+    "sneaker",
+    "travel",
+    "kitchen",
+    "smart watch",
+    "laptop",
+    "tablet",
+    "beauty",
+    "космет",
+    "смартфон",
+    "навушник",
+    "товар",
+    "купити",
+)
 
 TREND_FIELDS = (
     "category",
@@ -174,7 +208,8 @@ def fetch_live_signals(limit_per_geo=6):
             for item in root.findall("./channel/item")[:limit_per_geo]:
                 title = (item.findtext("title") or "").strip()
                 link = (item.findtext("link") or "").strip()
-                if title:
+                normalized_title = title.lower()
+                if title and any(word in normalized_title for word in PRODUCT_SIGNAL_WORDS):
                     signals.append({"market": geo, "title": title, "link": link})
         except (requests.RequestException, ET.ParseError):
             continue
@@ -202,6 +237,8 @@ def build_prompt(count, excluded_items, live_signals):
 Живые поисковые сигналы Google Trends по рынкам UA, PL, DE и US приведены ниже.
 Используй только релевантные товарные сигналы. Не превращай новости, спорт и имена людей
 в товарный тренд без ясной коммерческой связи.
+Запрещено строить товары вокруг имён людей, политиков, спортсменов, фильмов, новостей,
+праздничных дат и торговых марок, если сам запрос не называет конкретный товар.
 {signals}
 
 {BASE_RULES}
@@ -574,13 +611,18 @@ def main():
     live_signals = fetch_live_signals()
     candidates = get_trends(recent_items, live_signals)
     trends = candidates[:DAILY_COUNT]
+    rating_only = os.environ.get("RATING_REFRESH_ONLY") == "1"
 
-    daily_blocks = [f"Trend Radar — {today.strftime('%d.%m.%Y')}", "8 товарных трендов на сегодня"]
-    for index, trend in enumerate(trends, start=1):
-        send_sheet_row(sheet_payload(today, trend))
-        daily_blocks.append(format_trend(index, trend))
-    daily_blocks.append("Сохранено в Google Sheets: 8 строк")
-    send_telegram("\n\n".join(daily_blocks))
+    if not rating_only:
+        daily_blocks = [
+            f"Trend Radar — {today.strftime('%d.%m.%Y')}",
+            "8 товарных трендов на сегодня",
+        ]
+        for index, trend in enumerate(trends, start=1):
+            send_sheet_row(sheet_payload(today, trend))
+            daily_blocks.append(format_trend(index, trend))
+        daily_blocks.append("Сохранено в Google Sheets: 8 строк")
+        send_telegram("\n\n".join(daily_blocks))
 
     history.extend(
         {
@@ -594,7 +636,7 @@ def main():
     state["entries"] = history
     save_state(state)
 
-    if now.weekday() == 5:
+    if now.weekday() == 5 and not rating_only:
         send_telegram(build_weekly_digest(history, today))
 
     state["pinned_rating_message_id"] = update_pinned_rating(
@@ -609,6 +651,7 @@ def main():
                 "daily_trends": len(trends),
                 "rating_candidates": len(candidates),
                 "rating_size": len(rating_top(history, today)),
+                "rating_only": rating_only,
                 "weekly_digest": now.weekday() == 5,
                 "history_entries": len(history),
                 "live_signals": len(live_signals),
