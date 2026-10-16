@@ -76,6 +76,20 @@ TREND_FIELDS = (
     "link",
 )
 
+RATING_VALUES = ("низкий", "средний", "высокий")
+FEMININE_RATING_VALUES = ("низкая", "средняя", "высокая")
+RUSSIAN_TEXT_FIELDS = (
+    "category",
+    "item",
+    "reason",
+    "source",
+    "audience",
+    "sales_angle",
+    "first_test",
+    "risks",
+    "check",
+)
+
 BASE_RULES = """
 Ты Trend Radar Bot — русскоязычный аналитик товарных трендов и e-commerce.
 
@@ -89,8 +103,10 @@ BASE_RULES = """
 - Для каждого пункта дай 2–4 реальных примера товаров, брендов или площадок.
 - Дай 2–4 конкретных поисковых запроса для самостоятельной проверки.
 - Первый тест должен занимать не больше 20 минут и не требовать закупки партии.
-- Оцени поля commercial_potential, entry_difficulty, strength, competition и margin_potential
-  одним из значений: низкий, средний, высокий.
+- Оцени поля commercial_potential, competition и margin_potential одним из значений:
+  низкий, средний, высокий.
+- Оцени поля entry_difficulty и strength одним из значений:
+  низкая, средняя, высокая.
 - В link ставь только реальную ссылку из блока живых сигналов, если она прямо относится к товару.
   Иначе оставь пустую строку.
 - Не используй переносы строк внутри строковых значений JSON.
@@ -216,6 +232,36 @@ def fetch_live_signals(limit_per_geo=6):
     return signals
 
 
+def build_response_schema(count):
+    properties = {field: {"type": "string"} for field in TREND_FIELDS}
+    for field in ("margin_potential", "competition", "commercial_potential"):
+        properties[field] = {"type": "string", "enum": list(RATING_VALUES)}
+    for field in ("entry_difficulty", "strength"):
+        properties[field] = {
+            "type": "string",
+            "enum": list(FEMININE_RATING_VALUES),
+        }
+
+    return {
+        "type": "object",
+        "properties": {
+            "trends": {
+                "type": "array",
+                "minItems": count,
+                "maxItems": count,
+                "items": {
+                    "type": "object",
+                    "properties": properties,
+                    "required": list(TREND_FIELDS),
+                    "additionalProperties": False,
+                },
+            }
+        },
+        "required": ["trends"],
+        "additionalProperties": False,
+    }
+
+
 def build_prompt(count, excluded_items, live_signals):
     excluded = ", ".join(excluded_items[-160:]) or "нет"
     signal_lines = [
@@ -245,7 +291,7 @@ def build_prompt(count, excluded_items, live_signals):
 """
 
 
-def ask_groq(prompt):
+def ask_groq(prompt, count):
     response = requests.post(
         "https://api.groq.com/openai/v1/chat/completions",
         headers={
@@ -266,7 +312,15 @@ def ask_groq(prompt):
             ],
             "temperature": 0.3,
             "max_tokens": 10000,
-            "response_format": {"type": "json_object"},
+            "reasoning_effort": "low",
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "trend_radar_digest",
+                    "strict": True,
+                    "schema": build_response_schema(count),
+                },
+            },
         },
         timeout=120,
     )
@@ -286,12 +340,50 @@ def parse_trends(text):
 def clean_trend(raw):
     if not isinstance(raw, dict):
         return None
-    trend = {field: str(raw.get(field, "")).strip() for field in TREND_FIELDS}
+    trend = {
+        field: re.sub(r"\s+", " ", str(raw.get(field, ""))).strip()
+        for field in TREND_FIELDS
+    }
     required = TREND_FIELDS[:-1]
     if any(not trend[field] for field in required):
         return None
     if len(trend["item"]) < 4 or len(trend["reason"]) < 20:
         return None
+    if any(
+        not re.search(r"[а-яё]", trend[field], re.IGNORECASE)
+        for field in RUSSIAN_TEXT_FIELDS
+    ):
+        return None
+    if any(
+        trend[field] not in RATING_VALUES
+        for field in ("margin_potential", "competition", "commercial_potential")
+    ):
+        return None
+    if any(
+        trend[field] not in FEMININE_RATING_VALUES
+        for field in ("entry_difficulty", "strength")
+    ):
+        return None
+    return trend
+
+
+def ground_source(trend, allowed_links):
+    if trend["link"] in allowed_links:
+        return trend
+
+    trend["link"] = ""
+    source = trend["source"].lower()
+    unsupported_claims = (
+        "google trends",
+        "рост запросов",
+        "растущий интерес",
+        "rising interest",
+    )
+    if any(claim in source for claim in unsupported_claims):
+        trend["source"] = (
+            "Гипотеза Groq без подтверждённого живого сигнала; "
+            f"проверить вручную по запросам: {trend['search_queries']}"
+        )
     return trend
 
 
@@ -307,7 +399,10 @@ def get_trends(recent_items, live_signals, target_count=RATING_COUNT):
         requested = min(12, missing + 4)
         try:
             raw_trends = parse_trends(
-                ask_groq(build_prompt(requested, excluded, live_signals))
+                ask_groq(
+                    build_prompt(requested, excluded, live_signals),
+                    requested,
+                )
             )
         except (requests.RequestException, KeyError, TypeError):
             if attempt == 3:
@@ -319,8 +414,7 @@ def get_trends(recent_items, live_signals, target_count=RATING_COUNT):
             trend = clean_trend(raw)
             if not trend or is_duplicate(trend["item"], excluded):
                 continue
-            if trend["link"] not in allowed_links:
-                trend["link"] = ""
+            trend = ground_source(trend, allowed_links)
             collected.append(trend)
             excluded.append(trend["item"])
             added += 1
@@ -601,6 +695,17 @@ def build_rating(history, today, now):
     return "\n".join(lines).strip()
 
 
+def build_history_entries(today, candidates, rating_only=False):
+    return [
+        {
+            "date": today.isoformat(),
+            "trend": trend,
+            "published": not rating_only and index < DAILY_COUNT,
+        }
+        for index, trend in enumerate(candidates)
+    ]
+
+
 def main():
     now = datetime.now(KYIV)
     today = now.date()
@@ -624,14 +729,7 @@ def main():
         daily_blocks.append("Сохранено в Google Sheets: 8 строк")
         send_telegram("\n\n".join(daily_blocks))
 
-    history.extend(
-        {
-            "date": today.isoformat(),
-            "trend": trend,
-            "published": index < DAILY_COUNT,
-        }
-        for index, trend in enumerate(candidates)
-    )
+    history.extend(build_history_entries(today, candidates, rating_only))
     history = recent_history(history, today, HISTORY_DAYS)
     state["entries"] = history
     save_state(state)
