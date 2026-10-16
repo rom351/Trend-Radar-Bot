@@ -8,11 +8,6 @@ concurrency:
   cancel-in-progress: false
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - .github/test-trigger
   schedule:
     - cron: '45 5 * * *'
       timezone: "Europe/Kyiv"
@@ -42,7 +37,6 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           GOOGLE_SHEETS_WEBHOOK_URL: ${{ secrets.GOOGLE_SHEETS_WEBHOOK_URL }}
-          RATING_REFRESH_ONLY: ${{ github.event_name == 'push' && '1' || '0' }}
         run: python main.py
 
       - name: Save trend history
