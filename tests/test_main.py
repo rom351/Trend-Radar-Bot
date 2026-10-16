@@ -24,7 +24,57 @@ def trend(
     }
 
 
+def full_trend(item="Умная кормушка"):
+    return {
+        "category": "товары для животных",
+        "item": item,
+        "examples": "Xiaomi Smart Pet Feeder, Petkit Fresh Element",
+        "reason": "Покупатели хотят выдавать корм по расписанию и контролировать порции",
+        "source": "Гипотеза, которую нужно проверить вручную",
+        "search_queries": "умная кормушка отзывы, автоматическая кормушка цена",
+        "purchase_price": "ориентир закупки требует проверки",
+        "retail_price": "ориентир розницы требует проверки",
+        "margin_potential": "средний",
+        "competition": "средний",
+        "audience": "владельцы кошек и собак",
+        "sales_angle": "показать выдачу корма по расписанию",
+        "first_test": "сравнить десять предложений на маркетплейсах",
+        "commercial_potential": "средний",
+        "entry_difficulty": "средняя",
+        "strength": "средняя",
+        "risks": "надёжность механизма и возвраты",
+        "check": "отзывы, гарантию и совместимость приложения",
+        "link": "",
+    }
+
+
 class TrendRadarTests(unittest.TestCase):
+    def test_response_schema_requires_exact_count(self):
+        schema = main.build_response_schema(10)
+        trends_schema = schema["properties"]["trends"]
+        self.assertEqual(trends_schema["minItems"], 10)
+        self.assertEqual(trends_schema["maxItems"], 10)
+
+    def test_clean_trend_requires_russian_text_and_valid_ratings(self):
+        self.assertIsNotNone(main.clean_trend(full_trend()))
+        self.assertIsNone(main.clean_trend(full_trend("Smart pet feeder")))
+        invalid = full_trend()
+        invalid["strength"] = "сильная"
+        self.assertIsNone(main.clean_trend(invalid))
+
+    def test_unverified_google_claim_is_relabelled(self):
+        candidate = full_trend()
+        candidate["source"] = "Google Trends показывает растущий интерес"
+        candidate["link"] = "https://example.com/unverified"
+        grounded = main.ground_source(candidate, set())
+        self.assertEqual(grounded["link"], "")
+        self.assertIn("Гипотеза Groq", grounded["source"])
+
+    def test_rating_only_entries_are_not_marked_published(self):
+        today = date(2026, 10, 17)
+        entries = main.build_history_entries(today, [full_trend()], rating_only=True)
+        self.assertFalse(entries[0]["published"])
+
     def test_similar_items_are_duplicates(self):
         self.assertTrue(
             main.items_match(
